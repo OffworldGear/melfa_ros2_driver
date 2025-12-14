@@ -440,6 +440,9 @@ typedef struct enet_rtcmd_str
         JOINT jnt; // JOINT type [rad]
         PULSE pls; // PULSE type [pulse] or Integer type [% / non-unit]
     } dat3;
+    // --- MGI(12/14/25) ADDED THIS LINE BELOW based on work with the CR751D to get precise packet size ---
+    char padding[44]; // Pad packet to 240 bytes for CR751-D compatibility
+    // ---------------------------
 } MXTCMD;
 
 #endif

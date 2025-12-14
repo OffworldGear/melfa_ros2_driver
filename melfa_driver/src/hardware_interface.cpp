@@ -235,8 +235,11 @@ MELFAPositionHardwareInterface::on_activate(const rclcpp_lifecycle::State& previ
   j8_linear = stoi(info_.hardware_parameters["j8_linear"]);
   packet_lost_log = stoi(info_.hardware_parameters["packet_lost_log"]);
   api_wrap_->create_port();
-
-  api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT;          // set joint cmd type to joint.
+  // --- MODIFIED START --- MGI (12/14/25)
+  // Initialize with NULL type to satisfy CR751 Handshake (prevents Error 7840)
+  api_wrap_->cmd_pack.send_type = MXT_TYP_NULL;           
+  // --- MODIFIED END ---
+  // api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT;          // set joint cmd type to joint.
   *(api_wrap_->cmd_pack.mon_dat) = MXT_TYP_FB_JOINT;      // set first feedback to joint encoder feedback.
   *(api_wrap_->cmd_pack.mon_dat + 1) = MXT_TYP_FB_POSE;   // set second feedback to pose feedback.
   *(api_wrap_->cmd_pack.mon_dat + 2) = MXT_TYP_FB_PULSE;  // set thrid feedback to pulse per second.
@@ -251,6 +254,11 @@ MELFAPositionHardwareInterface::on_activate(const rclcpp_lifecycle::State& previ
     RCLCPP_FATAL(rclcpp::get_logger("MELFAPositionHardwareInterface"), "ERROR: Enable to connect to robot.");
     return hardware_interface::CallbackReturn::ERROR;
   }
+  
+  // --- MODIFIED START --- MGI (12/14/25)
+  // Handshake complete. Now switch to JOINT type for Real-Time Control.
+  api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT;
+  // --- MODIFIED END ---
 
   RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "System successfully started!");
 
