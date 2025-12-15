@@ -14,7 +14,7 @@
 
 controller_manager:
   ros__parameters:
-    update_rate: 140  #286 Hz # You might want to lower this to 140 for CR750 (1/0.00711 = ~140Hz)
+    update_rate: 286  #286 Hz was the original # You might want to lower this to 140 for CR750 (1/0.00711 = ~140Hz)
 
     rv4fld_controller:
       type: joint_trajectory_controller/JointTrajectoryController
