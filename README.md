@@ -1,3 +1,11 @@
+I have a CR751D and RV-4FL-D robot. The current official MELFA driver for ROS2 was designed for the CR800. My changes allow you to select the CR750 series controller and the RV-4FL-D robot (the parameters are all copied from the RV-4FRL. I will see what needs changing in the future). My CR-751-D required some different handshaking than the CR800. 
+
+
+
+
+
+
+
 <img src="./doc/figures/MELFA_t.png" width="400" height="98"> <img src="./doc/figures/ROS-AP-logo.png" width="208" height="98">
 
 # __MITSUBISHI ELECTRIC INDUSTRIAL ROBOT MELFA ROS2 DRIVER__
@@ -200,3 +208,4 @@ __Environment specifications__, __Internal wiring__ and __Controller type__ do n
 More Support & Service, please contact us [@MEAP](https://sg.mitsubishielectric.com/fa/en/contact.html) &#9743;. For contributing and reporting, refer to [this](./CONTRIBUTING.md) for development related enquiries.
 
 <div> </div>
+
