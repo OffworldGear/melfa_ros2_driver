@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<robot xmlns:xacro="http://wiki.ros.org/xacro">
-
-  <xacro:include filename="$(find melfa_rv4fld_moveit_config)/config/rv4fld_macro.srdf.xacro"/>
-
-  <xacro:rv4fld />
-
-</robot>
