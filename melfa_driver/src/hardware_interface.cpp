@@ -287,7 +287,38 @@ else
   api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT;
   // --- MODIFIED END ---
   */
-
+// --- SAFETY LOOP: SYNC WITH ROBOT ---
+  // We must wait for a valid packet to know the robot's REAL position.
+  // If we skip this, the driver defaults to 0.0 and crashes the robot (Error H2133).
+  int retry_count = 0;
+  bool valid_packet = false;
+  RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Waiting for valid packet to sync position...");
+  
+  // Try for 5 seconds (roughly 700 attempts at 7ms)
+  while (rclcpp::ok() && !valid_packet && retry_count < 700) {
+      // 1. Send a dummy packet to keep connection alive
+      api_wrap_->send_packet_(); 
+      
+      // 2. Try to read the response
+      if (api_wrap_->recv_packet_() == 0) { // 0 indicates success in your driver
+          // 3. Process the packet to fill internal data structures
+          api_wrap_->ReadFromRobot_FB_(); 
+          valid_packet = true;
+          RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Packet received! Syncing internal state...");
+      } else {
+          // Packet lost or delayed; wait 7ms and try again
+          #ifdef __linux__
+          usleep(7110); 
+          #endif
+          retry_count++;
+      }
+  }
+  
+  if (!valid_packet) {
+      RCLCPP_FATAL(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Failed to receive initial packet. Aborting to prevent robot crash.");
+      return hardware_interface::CallbackReturn::ERROR;
+  }
+  // -------------------------------------
   RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "System successfully started!");
 
   // Reads joint position state from rtexc API feedback packet
