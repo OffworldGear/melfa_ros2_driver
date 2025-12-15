@@ -289,20 +289,21 @@ else
   */
 // --- SAFETY LOOP: SYNC WITH ROBOT ---
   // We must wait for a valid packet to know the robot's REAL position.
-  // If we skip this, the driver defaults to 0.0 and crashes the robot (Error H2133).
   int retry_count = 0;
   bool valid_packet = false;
   RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Waiting for valid packet to sync position...");
   
-  // Try for 5 seconds (roughly 700 attempts at 7ms)
+  // Set command to NULL temporarily so we don't accidentally move the robot while pinging
+  api_wrap_->cmd_pack.cmd_type = MXT_CMD_NULL;
+
+  // Try for 5 seconds (approx 700 attempts at 7ms)
   while (rclcpp::ok() && !valid_packet && retry_count < 700) {
-      // 1. Send a dummy packet to keep connection alive
-      api_wrap_->send_packet_(); 
+      // 1. Send packet (Uses PUBLIC method now)
+      api_wrap_->WriteToRobot_CMD_(); 
       
-      // 2. Try to read the response
-      if (api_wrap_->recv_packet_() == 0) { // 0 indicates success in your driver
-          // 3. Process the packet to fill internal data structures
-          api_wrap_->ReadFromRobot_FB_(); 
+      // 2. Try to read response (Uses PUBLIC method now)
+      // ReadFromRobot_FB_ returns 0 on success
+      if (api_wrap_->ReadFromRobot_FB_() == 0) { 
           valid_packet = true;
           RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Packet received! Syncing internal state...");
       } else {
@@ -314,11 +315,15 @@ else
       }
   }
   
+  // Reset command type to MOVE so the actual driver loop works later
+  api_wrap_->cmd_pack.cmd_type = MXT_CMD_MOVE;
+
   if (!valid_packet) {
       RCLCPP_FATAL(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Failed to receive initial packet. Aborting to prevent robot crash.");
       return hardware_interface::CallbackReturn::ERROR;
   }
   // -------------------------------------
+  
   RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "System successfully started!");
 
   // Reads joint position state from rtexc API feedback packet
