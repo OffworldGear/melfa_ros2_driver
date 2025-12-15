@@ -785,7 +785,7 @@ namespace MelfaEthernet
         }
 
         sTimeOut.tv_sec = 0;
-        sTimeOut.tv_usec = (long)(2 * period * 1000);
+        sTimeOut.tv_usec = (long)(10 * period * 1000); // changed from 2 * period in order to give more breathing room for ROS to read the incomming buffer
 
 #ifdef _WIN32
         status = select(0, &SockSet, (fd_set *)NULL, (fd_set *)NULL, &sTimeOut);
