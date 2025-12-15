@@ -48,7 +48,7 @@ rv4fld_controller:
       # - rv4fld_joint_5
       # - rv4fld_joint_6
 
-    state_publish_rate: 140.0 # Defaults to 50 , was 286 changed to be closer to the 7.11 ms rate of the CR750
+    state_publish_rate: 286.0 # Defaults to 50 , was 286 changed to 140 (changed back) be closer to the 7.11 ms rate of the CR750
     action_monitor_rate: 20.0 # Defaults to 20
 
 gpio_controller:
