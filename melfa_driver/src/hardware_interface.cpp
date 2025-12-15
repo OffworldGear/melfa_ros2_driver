@@ -228,7 +228,8 @@ MELFAPositionHardwareInterface::on_activate(const rclcpp_lifecycle::State& previ
     control_cycle_period = 7.11F;
 
   // Configure communication settings
-  api_wrap_ = std::make_unique<MelfaEthernet::rtexc>(control_cycle_period);
+  // api_wrap_ = std::make_unique<MelfaEthernet::rtexc>(control_cycle_period);
+  api_wrap_ = std::make_unique<MelfaEthernet::rtexc>(40.0F); //(This gives WSL 40ms to receive a packet before declaring it "Lost", instead of the strict 7ms, drastically reducing packet loss.)
   api_wrap_->robot_ip.dst_ip_address = info_.hardware_parameters["robot_ip"];
   api_wrap_->robot_ip.port = stoi(info_.hardware_parameters["robot_port"]);
   is_scara = stoi(info_.hardware_parameters["scara"]);
@@ -323,8 +324,14 @@ else
       return hardware_interface::CallbackReturn::ERROR;
   }
   // -------------------------------------
-  
+
   RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "System successfully started!");
+
+  // [PATCH START] CR750 Shim: Copy Joint Data to Encoder Data
+  if (info_.hardware_parameters["controller_type"] == "CR750") {
+      api_wrap_->fb_pack.jnt_EFB = api_wrap_->fb_pack.jnt_FB;
+  }
+  // [PATCH END]
 
   // Reads joint position state from rtexc API feedback packet
   joint_position_states_[0] = api_wrap_->fb_pack.jnt_EFB.j1;
@@ -627,6 +634,12 @@ hardware_interface::return_type MELFAPositionHardwareInterface::read(const rclcp
     
     return hardware_interface::return_type::OK;
   }
+
+  // [PATCH START] CR750 Shim: Copy Joint Data to Encoder Data
+  if (controller_type_ == "CR750") {
+      api_wrap_->fb_pack.jnt_EFB = api_wrap_->fb_pack.jnt_FB;
+  }
+  // [PATCH END]
 
   joint_position_states_[0] = api_wrap_->fb_pack.jnt_EFB.j1;
   joint_position_states_[1] = api_wrap_->fb_pack.jnt_EFB.j2;
