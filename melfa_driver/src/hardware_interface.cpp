@@ -223,6 +223,9 @@ MELFAPositionHardwareInterface::on_activate(const rclcpp_lifecycle::State& previ
     control_cycle_period = 7.11F;
   if (info_.hardware_parameters["controller_type"] == "D")
     control_cycle_period = 3.5F;
+  // adding this in to explicitly recognize the CR750 series controllers (it is the same as type Q) MGI (12/15/25)
+  if (info_.hardware_parameters["controller_type"] == "CR750") 
+    control_cycle_period = 7.11F;
 
   // Configure communication settings
   api_wrap_ = std::make_unique<MelfaEthernet::rtexc>(control_cycle_period);
@@ -235,8 +238,23 @@ MELFAPositionHardwareInterface::on_activate(const rclcpp_lifecycle::State& previ
   j8_linear = stoi(info_.hardware_parameters["j8_linear"]);
   packet_lost_log = stoi(info_.hardware_parameters["packet_lost_log"]);
   api_wrap_->create_port();
+// Add in the changes required for the CR751D controller (I assume it will work with all CR750s)
+  if (info_.hardware_parameters["controller_type"] == "CR750") 
+{
+   // CR750/CR751 Specific Startup
+   api_wrap_->cmd_pack.send_type = MXT_TYP_NULL;       // Start with NULL
+   *(api_wrap_->cmd_pack.mon_dat) = MXT_TYP_JOINT;     // Request Type 2 Feedback (Not Encoder)
+} 
+else 
+{
+   // Standard CR800 Startup
+   api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT;
+   *(api_wrap_->cmd_pack.mon_dat) = MXT_TYP_FB_JOINT; 
+}
+/* Commenting all of the hard coding out. This was used to get the CR751D working.
+   Now we have the conditional statement above to only make the changes based on controller choice.
   // --- MODIFIED START --- MGI (12/14/25)
-  // Initialize with NULL type to satisfy CR751 Handshake (prevents Error 7840)
+  // Initialize with NULL type to satisfy CR751 Handshake (prevents Error H7840)
   api_wrap_->cmd_pack.send_type = MXT_TYP_NULL;           
   // --- MODIFIED END ---
   // api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT;          // set joint cmd type to joint.
@@ -245,6 +263,7 @@ MELFAPositionHardwareInterface::on_activate(const rclcpp_lifecycle::State& previ
   *(api_wrap_->cmd_pack.mon_dat + 1) = MXT_TYP_FB_POSE;   // set second feedback to pose feedback.
   *(api_wrap_->cmd_pack.mon_dat + 2) = MXT_TYP_FB_PULSE;  // set thrid feedback to pulse per second.
   *(api_wrap_->cmd_pack.mon_dat + 3) = MXT_TYP_FBKCUR;    // set forth feedback to % current.
+*/
 
   // API debug mode
   api_wrap_->RT_API_DEBUG_MODE = 0;
@@ -256,10 +275,18 @@ MELFAPositionHardwareInterface::on_activate(const rclcpp_lifecycle::State& previ
     return hardware_interface::CallbackReturn::ERROR;
   }
   
+  // We need switch back to Joint type for the CR751D since it seems particular about needing the NULL first
+  if (info_.hardware_parameters["controller_type"] == "CR750") 
+{
+   // Switch to Control Mode after init
+   api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT; 
+}
+  /* This was originally hard coded, but with the conditional statement above we can remove it.
   // --- MODIFIED START --- MGI (12/14/25)
   // Handshake complete. Now switch to JOINT type for Real-Time Control.
   api_wrap_->cmd_pack.send_type = MXT_TYP_JOINT;
   // --- MODIFIED END ---
+  */
 
   RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "System successfully started!");
 
