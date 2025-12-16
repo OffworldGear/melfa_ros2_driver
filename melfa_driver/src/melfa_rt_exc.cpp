@@ -781,9 +781,9 @@ namespace MelfaEthernet
         // 2. Set the Timeout (THIS IS THE KEY FIX)
         sTimeOut.tv_sec = 0;
         
-        // Increase from 2 to 10. 
-        // 10 * 7.11ms = ~71ms tolerance. This allows the PC to lag without killing the connection.
-        sTimeOut.tv_usec = (long)(10 * period * 1000); 
+        // Increase from 2 to 4. (10 was too long and caused a noticeable pause)
+        // 4 * 7.11ms = ~28ms tolerance. This allows the PC to lag without killing the connection.
+        sTimeOut.tv_usec = (long)(4 * period * 1000); 
 
         // 3. Execute Select (Using existing logic for Linux/Windows)
 #ifdef _WIN32
@@ -828,7 +828,7 @@ namespace MelfaEthernet
             return -1;
         }
     }
-    
+
     int rtexc::print_monitored_feedback()
     {
         memset(console_msg, 0, sizeof(console_msg));
