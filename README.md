@@ -1,5 +1,147 @@
 I have a CR751D and RV-4FL-D robot. The current official MELFA driver for ROS2 was designed for the CR800. My changes allow you to select the CR750 series controller and the RV-4FL-D robot (the parameters are all copied from the RV-4FRL. I will see what needs changing in the future). My CR-751-D required some different handshaking than the CR800. 
 
+All of the changes were done with Gemeni 3.0 Thinking. 
+
+Mitsubishi RV-4FL-D & CR751-D ROS2 Driver Configuration Guide
+This document details the complete setup, code modifications, and custom configurations required to run the Mitsubishi RV-4FL-D robot with the CR751-D controller using ROS2 (Humble) and MoveIt 2.
+These changes address:
+The Handshake: Fixing the UDP synchronization sequence (sending NULL) to prevent immediate disconnects.
+Hardware Mismatch: Creating a custom definition for the RV-4FL-D (Standard Reach) as the driver defaults to RV-4FRL (Long Reach).
+Timing Mismatches: Differences between the CR751 (7.11ms cycle) and CR800 (3.5ms cycle).
+OS Jitter: Running ROS2 inside WSL over a USB Ethernet adapter.
+Safety: Preventing "Excessive Speed" errors caused by network latency.
+1. The Handshake Logic (Critical Code Change)
+The default driver assumes the robot is ready to receive movement commands immediately. However, the CR751 controller requires a specific "Handshake" sequence to establish the UDP link before it accepts motion data. Without this, the controller rejects the first packet and throws an error.
+The Fix: Sending the NULL Packet
+We modified the hardware_interface.cpp on_activate() function. Instead of immediately entering the control loop, the driver now performs a "Ping-Pong" synchronization:
+Send NULL: The driver sends a packet with cmd_type = MXT_CMD_NULL (0). This tells the robot "I am here, but don't move yet."
+Wait for Response: The driver blocks until it receives a valid status packet from the robot.
+Sync Position: The driver reads the robot's actual joint angles from this response and sets the ROS command variables to match.
+Begin Control: Only then does the driver switch cmd_type to MXT_CMD_MOVE (1).
+File: melfa_driver/src/hardware_interface.cpp
+
+C++
+
+
+// In CallbackReturn MELFAPositionHardwareInterface::on_activate(...)
+// ... (After socket creation)
+
+// 1. Send NULL packet to wake up the CR751 UDP listener
+rt_exc_->cmd_pack.cmd_type = MXT_CMD_NULL; 
+rt_exc_->WriteToRobot_CMD_();
+
+// 2. Wait for the Robot to reply (The Handshake)
+RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Waiting for valid packet to sync position...");
+
+// (Blocking loop to read initial position)
+// ... [Code implementation ensures we have valid hw_states_ before proceeding]
+
+RCLCPP_INFO(rclcpp::get_logger("MELFAPositionHardwareInterface"), "Packet received! Syncing internal state...");
+
+
+2. Custom Robot Definition (RV-4FL-D)
+The official driver only supports the RV-4FRL (Long Reach, 649mm). We possess the RV-4FL-D (Standard Reach, 505mm). Using the FRL URDF resulted in IK errors and self-collisions because the arm lengths were incorrect.
+We created a new robot description package rv4fld by cloning and modifying the rv4frl files.
+New Files Created:
+File Type
+Path
+Purpose
+Xacro/URDF
+melfa_description/urdf/rv4fld/rv4fld.urdf.xacro
+Defines the correct link lengths (DH Parameters) for the 505mm reach.
+SRDF
+melfa_moveit_config/.../config/rv4fld.srdf
+Defines planning groups and collision pairs for the standard reach arm.
+Controllers
+melfa_description/config/rv4fld_controllers.yaml
+Maps the specific rv4fld_joint_1...6 names to the joint_trajectory_controller.
+Launch
+melfa_bringup/launch/rv4fld_control.launch.py
+The main entry point to load the specific RV-4FL-D configuration.
+
+3. Hardware & Network Architecture (disregard for other setups)
+The "Dual-Adapter" Strategy (For WSL + VM)
+To prevent Windows from causing latency by routing packets between the Host (WSL) and the Guest VM (RT Toolbox3) on a single interface, use a physical Ethernet Switch and USB Passthrough.
+Topology:
+Robot (IP: 192.168.0.20) $\rightarrow$ Switch
+WSL Host Adapter (IP: 192.168.0.10) $\rightarrow$ Switch
+VM USB Adapter (IP: 192.168.0.100) $\rightarrow$ Switch (Pass this device through to VirtualBox/VMware exclusively).
+Settings:
+Disable Energy Efficient Ethernet (EEE) on all adapters in Windows Device Manager.
+Set Process Priority for vmmem (WSL) to "High" in Windows Task Manager.
+4. Robot Controller Configuration (CR751-D)
+Robot Program (MXT Command)
+The CR751 uses a 7.11ms cycle. We typically set the MXT filter to 50ms to smooth out jitter from the Windows/WSL network stack.
+Code (1.prg):
+
+Basic
+
+
+' MXT <FileNo>, <Type>, <FilterTimeConstant>
+' Filter=50 absorbs OS jitter.
+MXT 1, 1, 50
+
+
+5. ROS2 Driver Code Modifications
+These changes are required in the C++ source code of melfa_driver. You must rebuild (colcon build) after applying them.
+A. Fix: Connection Dropouts (Packet Loss)
+File: melfa_driver/src/melfa_rt_exc.cpp
+Function: recv_packet_
+Standard drivers have a strict timeout (approx 7ms). If Windows/WSL pauses for background tasks, the driver disconnects. We increased the tolerance.
+
+C++
+
+
+// Change timeout calculation
+sTimeOut.tv_sec = 0;
+// Increase multiplier from 2 to 10.
+// 10 * period allows the OS to "blink" for ~70ms without killing the connection.
+sTimeOut.tv_usec = (long)(10 * period * 1000); 
+
+
+B. Fix: "Excessive Speed" Safety Clamp
+File: melfa_driver/src/hardware_interface.cpp
+Function: write
+If the PC lags, the next packet might request a position far ahead in time. The CR751 will try to move there instantly, triggering an Excessive Speed Error (L01/E.02). We implement a software clamp.
+
+C++
+
+
+// Add to top of file
+const double SAFE_RAD_LIMIT = 0.015; // ~0.85 degrees per cycle limit
+
+// Inside write() function:
+// [Logic checks diff between target and current. If > LIMIT, clamps target to current + LIMIT]
+
+
+6. ROS2 Controller Configuration (YAML)
+File: melfa_description/config/rv4fld_controllers.yaml
+A. Sync Update Rate
+Set the update rate to 140Hz to match the CR751 hardware cycle (1 / 0.00711s).
+
+YAML
+
+
+controller_manager:
+  ros__parameters:
+    update_rate: 140  # Changed from default 250/286
+
+
+B. Fix: "Jump" at End of Movement
+By default, the trajectory controller might disable the control loop slightly before the robot comes to a complete halt, causing a physical "thud" or jump.
+
+YAML
+
+
+rv4fld_controller:
+  ros__parameters:
+    # Forces the planner to ensure velocity is 0 before finishing
+    allow_nonzero_velocity_at_trajectory_end: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+
 
 
 
@@ -208,4 +350,5 @@ __Environment specifications__, __Internal wiring__ and __Controller type__ do n
 More Support & Service, please contact us [@MEAP](https://sg.mitsubishielectric.com/fa/en/contact.html) &#9743;. For contributing and reporting, refer to [this](./CONTRIBUTING.md) for development related enquiries.
 
 <div> </div>
+
 
