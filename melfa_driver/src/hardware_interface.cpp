@@ -14,6 +14,16 @@
 
 #include "melfa_driver/hardware_interface.hpp"
 
+// (MGI) Try to limit the max speed so that ROS doesn't go faster than the controller can give feedback
+// Safe velocity limit in radians/cycle. 
+// 0.1 rad (~5.7 deg) per 3.5ms is ~28 rad/s (very fast). 
+// Limit movement to ~0.85 degrees per 3.5ms cycle (~245 deg/sec).
+// This prevents "jump" errors when the PC lags.
+// Let's cap it to something safe like 0.02 rad per cycle (~5.7 rad/s or ~320 deg/s) to prevent error jumps.
+
+const double SAFE_RAD_LIMIT = 0.015; // ~0.85 degrees per cycle
+const double SAFE_LIN_LIMIT = 0.001; // 1mm per cycle (for linear axes if any)
+
 namespace melfa_driver
 {
 
@@ -789,6 +799,24 @@ hardware_interface::return_type MELFAPositionHardwareInterface::read(const rclcp
   return hardware_interface::return_type::OK;
 }
 
+//New write function
+// ==============================================================================
+// CR750/CR751 SPECIFIC SETTINGS
+// ==============================================================================
+// The CR750/CR751 controllers use a fixed 3.5ms cycle for Real-Time External Control.
+// If the PC lags (e.g., missed 3 cycles = 10.5ms delay), the next ROS command will 
+// request a position change intended for 10ms in the future.
+// The CR751 will attempt to move that full distance in ONE 3.5ms cycle.
+//
+// Math: 5 degrees jump / 0.0035 sec = 1428 deg/sec -> Triggers "Excessive Speed" (L01/E.02).
+//
+// FIX: We clamp the max movement per cycle to ~0.85 degrees (0.015 rad).
+// 0.015 rad / 0.0035 sec = ~4.2 rad/s (~245 deg/sec) max velocity.
+// This is fast enough for operation but prevents error-state velocities.
+// ==============================================================================
+const double SAFE_RAD_LIMIT = 0.015; 
+const double SAFE_LIN_LIMIT = 0.002; // 2mm per cycle (only for linear/SCARA Z)
+
 hardware_interface::return_type MELFAPositionHardwareInterface::write(const rclcpp::Time& time,
                                                                       const rclcpp::Duration& period)
 {
@@ -803,12 +831,183 @@ hardware_interface::return_type MELFAPositionHardwareInterface::write(const rclc
    *
    */
 
+  // -----------------------------------------------------------------------
+  // [CR750/CR751 FIX] Jitter Protection / Safety Clamp
+  // -----------------------------------------------------------------------
+  size_t num_joints = joint_position_commands_.size();
+  
+  for (size_t i = 0; i < num_joints; ++i)
+  {
+      // Determine limit based on axis type.
+      // RV-4FL is all rotational, but if SCARA is used, index 2 is linear (Z).
+      double limit = SAFE_RAD_LIMIT; 
+      if (is_scara == 1 && i == 2) limit = SAFE_LIN_LIMIT;
+
+      double target = joint_position_commands_[i];
+      double current = joint_position_states_[i]; // Actual robot feedback
+      double diff = target - current;
+
+      // Check if the ROS command is demanding a jump that exceeds CR751 physical limits
+      // due to PC network lag or OS scheduling jitter.
+      if (diff > limit) {
+          // Clamp positive jump
+          joint_position_commands_[i] = current + limit;
+      } else if (diff < -limit) {
+          // Clamp negative jump
+          joint_position_commands_[i] = current - limit;
+      }
+      // If within limits, joint_position_commands_[i] remains unchanged.
+  }
+  // -----------------------------------------------------------------------
+
+
   // Joint Position commands update from ROS2 controller to Melfa Controller API
   api_wrap_->cmd_pack.cmd_type = MXT_CMD_MOVE;
 
   api_wrap_->cmd_pack.jnt_CMD.j1 = joint_position_commands_[0];
   api_wrap_->cmd_pack.jnt_CMD.j2 = joint_position_commands_[1];
   api_wrap_->cmd_pack.jnt_CMD.j3 = joint_position_commands_[2];
+  
+  // SCARA unit conversion (mm to controller units)
+  if (is_scara == 1)
+  {
+    api_wrap_->cmd_pack.jnt_CMD.j3 *= 1000.0;
+  }
+
+  api_wrap_->cmd_pack.jnt_CMD.j4 = joint_position_commands_[3];
+  
+  if (is_scara == 0)
+  {
+    api_wrap_->cmd_pack.jnt_CMD.j5 = joint_position_commands_[4];
+    api_wrap_->cmd_pack.jnt_CMD.j6 = joint_position_commands_[5];
+  }
+
+  // Handle optional 7th/8th axes (Linear rails or rotators)
+  if (is_j7 == 1)
+  {
+    if (is_scara==1)
+    {
+      api_wrap_->cmd_pack.jnt_CMD.j7 = joint_position_commands_[4];
+    }
+    else
+    {
+      api_wrap_->cmd_pack.jnt_CMD.j7 = joint_position_commands_[6];
+    }
+    if (j7_linear == 1)
+    {
+      api_wrap_->cmd_pack.jnt_CMD.j7 *= 1000.0;
+    }
+  }
+  if (is_j8 == 1)
+  {
+    if (is_scara==1)
+    {
+      api_wrap_->cmd_pack.jnt_CMD.j8 = joint_position_commands_[5];
+    }
+    else
+    {
+      api_wrap_->cmd_pack.jnt_CMD.j8 = joint_position_commands_[7];
+    }
+    if (j8_linear == 1)
+    {
+      api_wrap_->cmd_pack.jnt_CMD.j8 *= 1000.0;
+    }
+  }
+
+  // Interface selection based on Binary IO control mode
+  if (execution_init_)
+  {
+    binary_config_ = static_cast<unsigned int>(mode_io_command_[0]);
+    execution_init_ = false;
+  }
+
+  if ((binary_config_ & 0b0000001) != 0)
+  {
+    setIO(hand_io_commands_);
+    binary_config_ ^= 0b0000001;
+  }
+  else if ((binary_config_ & 0b0000010) != 0)
+  {
+    setIO(plc_link_io_commands_);
+    binary_config_ ^= 0b0000010;
+  }
+  else if ((binary_config_ & 0b0000100) != 0)
+  {
+    setIO(safety_io_commands_, true);
+    binary_config_ ^= 0b0000100;
+  }
+  else if ((binary_config_ & 0b0001000) != 0)
+  {
+    setIO(io_unit_commands_);
+    binary_config_ ^= 0b0001000;
+  }
+  else if ((binary_config_ & 0b0010000) != 0)
+  {
+    setIO(misc1_io_commands_);
+    binary_config_ ^= 0b0010000;
+  }
+  else if ((binary_config_ & 0b0100000) != 0)
+  {
+    setIO(misc2_io_commands_);
+    binary_config_ ^= 0b0100000;
+  }
+  else if ((binary_config_ & 0b1000000) != 0)
+  {
+    setIO(misc3_io_commands_);
+    binary_config_ ^= 0b1000000;
+  }
+
+  if (binary_config_ == 0)
+  {
+    execution_init_ = true;
+  }
+
+  // Send packet to CR751 and check connection status
+  if (api_wrap_->robot_status)
+  {
+    if (api_wrap_->WriteToRobot_CMD_() != 0)
+    {
+      if (!api_wrap_->robot_status)
+      {
+        RCLCPP_FATAL(rclcpp::get_logger("MELFAPositionHardwareInterface"), "ERROR: Connection lost.");
+        return hardware_interface::return_type::ERROR;
+      }
+      RCLCPP_WARN(rclcpp::get_logger("MELFAPositionHardwareInterface"), "ERROR: Command Fail.");
+      return hardware_interface::return_type::OK;
+    }
+      return hardware_interface::return_type::OK;
+  }
+  else
+  {
+    RCLCPP_FATAL(rclcpp::get_logger("MELFAPositionHardwareInterface"), "ERROR: Connection lost.");
+    return hardware_interface::return_type::ERROR;
+  }
+  
+}
+
+/* This is the old Write function */
+/*hardware_interface::return_type MELFAPositionHardwareInterface::write(const rclcpp::Time& time,
+                                                                      const rclcpp::Duration& period)
+{ */
+  /**
+   * @brief Write method for MELFAPositionHardwareInterface class
+   *
+   * This function writes joint commands and IO commands to Melfa Controller API
+   *
+   * @param time The time recorded at the beginning of the current iteration of the control loop
+   * @param period The duration measured for the last iteration of the control loop.
+   * @returns hardware_interface::return_type::OK after writing interfaces to API.
+   *
+   */
+
+   /*
+  // Joint Position commands update from ROS2 controller to Melfa Controller API
+  api_wrap_->cmd_pack.cmd_type = MXT_CMD_MOVE;
+
+  api_wrap_->cmd_pack.jnt_CMD.j1 = joint_position_commands_[0];
+  api_wrap_->cmd_pack.jnt_CMD.j2 = joint_position_commands_[1];
+  api_wrap_->cmd_pack.jnt_CMD.j3 = joint_position_commands_[2];
+  
   if (is_scara == 1)
   {
     api_wrap_->cmd_pack.jnt_CMD.j3 *= 1000.0;
@@ -916,7 +1115,11 @@ hardware_interface::return_type MELFAPositionHardwareInterface::write(const rclc
     RCLCPP_FATAL(rclcpp::get_logger("MELFAPositionHardwareInterface"), "ERROR: Connection lost.");
     return hardware_interface::return_type::ERROR;
   }
-}
+  
+} */
+ //End of the old write function
+
+
 }  // namespace melfa_driver
 
 #include "pluginlib/class_list_macros.hpp"
