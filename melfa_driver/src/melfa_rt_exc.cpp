@@ -785,7 +785,10 @@ namespace MelfaEthernet
         }
 
         sTimeOut.tv_sec = 0;
-        sTimeOut.tv_usec = (long)(10 * period * 1000); // changed from 2 * period in order to give more breathing room for ROS to read the incomming buffer
+       // (MGI) Increase timeout tolerance to handle non-real-time OS jitter. Change from x2 to x10
+       // 10 * 7.11ms = 71.1ms (CR750 timing). This prevents false "Packet lost" warnings during PC lag.
+        sTimeOut.tv_usec = (long)(10 * period * 1000); 
+        int n = select(sock_fd_MXT + 1, &fds, NULL, NULL, &sTimeOut);
 
 #ifdef _WIN32
         status = select(0, &SockSet, (fd_set *)NULL, (fd_set *)NULL, &sTimeOut);
