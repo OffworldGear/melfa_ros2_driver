@@ -1,3 +1,93 @@
+//.If many of the issues I was having with real time control where due to latency due to sharing an Ethernet port with a virtual machine, these are some things I should review:
+
+From Gemini when asked to compare the changes I made compared to the original Melfa driver with regard to latency issues I was having:
+
+Based on the code provided, I have conducted a review of your modifications.
+
+You are correct to be concerned: **some of your changes are "band-aids" for high latency that will artificially cripple the robot's performance on a good network.** However, other changes (like the packet padding and handshake) are critical hardware compatibility fixes that **must stay**.
+
+Here is the breakdown of what to keep, what to tune, and what to delete.
+
+### 1. The Critical Hardware Fixes (KEEP THESE)
+
+These changes are required because the CR-751-D simply works differently than the CR800. If you remove these, the driver will break immediately.
+
+* **Packet Padding (44 Bytes):**
+* *Location:* `melfa_driver/include/melfa_driver/rt_exc_def.hpp`
+* *Code:* `char padding[44]; // Pad packet to 240 bytes`
+* *Verdict:* **Keep.** The CR-751 expects a specific packet size (likely 240 bytes). Without this, the controller rejects the UDP packet entirely. This has zero impact on speed.
+
+
+* **The "NULL" Handshake:**
+* *Location:* `melfa_driver/src/hardware_interface.cpp` (lines 135-149)
+* *Code:* Setting `api_wrap_->cmd_pack.send_type = MXT_TYP_NULL;` during init.
+* *Verdict:* **Keep.** The CR-751 requires this specific "Hello" sequence (sending NULL before JOINT) to initialize the Real-Time External Control session. The CR800 is more permissive, but the CR-751 will throw Error H7840 without it.
+
+
+* **7.11ms Cycle Time:**
+* *Location:* `melfa_driver/src/hardware_interface.cpp` (lines 115-116)
+* *Code:* `control_cycle_period = 7.11F;` for "CR750".
+* *Verdict:* **Keep.** This is the physical heartbeat of the controller. You cannot run it faster.
+
+
+
+---
+
+### 2. The "Latency Band-Aids" (MODIFY OR REMOVE)
+
+These are the settings you added to survive your laggy network. On a good connection, they are performance killers.
+
+#### A. The Safety Clamp (The Speed Limit)
+
+* *Location:* `melfa_driver/src/hardware_interface.cpp` (lines 405-425)
+* *Code:* `const double SAFE_RAD_LIMIT = 0.015;` and the logic `if (diff > limit) ...`.
+* *The Issue:* You are hard-capping the robot's velocity to **0.015 rad / 7.11ms**.
+* Math: .
+
+
+* *Impact:* The RV-4FL is capable of moving much faster than 120 degrees/second. This code prevents the robot from ever reaching full speed, even if the trajectory planner requests it.
+* *Recommendation:* **Increase or Remove.**
+* **Safe Move:** Increase `SAFE_RAD_LIMIT` to `0.04` (approx 320 deg/s) to allow brisk movements while still preventing "teleportation" glitches.
+* **Ideal Move:** If your network is now solid (Ethernet), **remove this logic entirely**. ROS 2 (MoveIt) handles velocity scaling; the driver shouldn't secretly cap it.
+
+
+
+#### B. The Massive Timeout
+
+* *Location:* `melfa_driver/src/hardware_interface.cpp` (line 122) and `melfa_rt_exc.cpp` (line 623)
+* *Code:* `api_wrap_ = std::make_unique<MelfaEthernet::rtexc>(50.0F);` and `sTimeOut.tv_usec = (long)(4 * period * 1000);`.
+* *The Issue:* You are initializing the timeout calculation with a base period of **50ms**.
+* Math: .
+
+
+* *Impact:* If a packet is lost, the driver pauses for **0.2 seconds** before realizing it. In robot control terms, 0.2 seconds is an eternity. This makes the robot feel "sluggish" to respond to errors or stops.
+* *Recommendation:* **Tune it.** Set the value in the constructor back to `7.11F` (the actual cycle time).
+* Change line 122 in `hardware_interface.cpp` to: `api_wrap_ = std::make_unique<MelfaEthernet::rtexc>(7.11F);`
+* This sets the timeout to , which is a reasonable buffer for a few lost packets without freezing the system for a fifth of a second.
+
+
+
+#### C. The Encoder Feedback Shim
+
+* *Location:* `melfa_driver/src/hardware_interface.cpp` (lines 313-315 and 336-338)
+* *Code:* `api_wrap_->fb_pack.jnt_EFB = api_wrap_->fb_pack.jnt_FB;`.
+* *The Issue:* You are overwriting the **Encoder Feedback** (EFB) with the **Command Feedback** (FB).
+* *Impact:* This lies to ROS. It tells ROS "The robot is exactly where you told it to be," ignoring any actual physical lag or position error.
+* *Recommendation:* **Test Removal.**
+* Try commenting this out. The CR-751 *should* send valid encoder data in the `MXT_TYP_JOINT` packet (it contains current position).
+* If you remove this and the robot works, your position data in RViz will be much more accurate.
+* *Only keep this* if the CR-751 returns all zeros for encoder data (which would be a firmware bug/limitation).
+
+
+
+### Summary of Action Plan
+
+1. **Modify `hardware_interface.cpp**`: Change `rtexc(50.0F)` back to `rtexc(7.11F)` to fix the sluggish error handling.
+2. **Modify `hardware_interface.cpp**`: Comment out the `SAFE_RAD_LIMIT` clamp logic in the `write()` function to unlock full speed.
+3. **Modify `hardware_interface.cpp**`: Comment out the `jnt_EFB = jnt_FB` lines and check if the robot still reports position correctly in RViz.
+4. **Leave `rt_exc_def.hpp**` exactly as it is (padding is good).
+
+///Overview of Changes//
 I have a CR751D and RV-4FL-D robot. The current official MELFA driver for ROS2 was designed for the CR800. My changes allow you to select the CR750 series controller and the RV-4FL-D robot (the parameters are all copied from the RV-4FRL. I will see what needs changing in the future). My CR-751-D required some different handshaking than the CR800. 
 
 All of the changes were done with Gemeni 3.0 Thinking. 
@@ -350,5 +440,6 @@ __Environment specifications__, __Internal wiring__ and __Controller type__ do n
 More Support & Service, please contact us [@MEAP](https://sg.mitsubishielectric.com/fa/en/contact.html) &#9743;. For contributing and reporting, refer to [this](./CONTRIBUTING.md) for development related enquiries.
 
 <div> </div>
+
 
 
